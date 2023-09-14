@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::mpsc, time::Duration};
 
 #[derive(Debug)]
-pub struct AppendEntries {
+pub struct AppendEntries<T> {
     pub term: usize,
     pub leader_id: usize,
     pub prev_log_index: usize,
-    pub entries: Vec<usize>,
+    pub entries: Vec<T>,
     pub leader_commit: usize,
 }
 
@@ -18,20 +18,30 @@ pub struct RequestVote {
 }
 
 #[derive(Debug)]
-pub enum RPC {
-    AppendEntries(AppendEntries),
+pub enum RPC<T> {
+    AppendEntries(AppendEntries<T>),
     AppendEntriesRes(usize, bool),
     RequestVote(RequestVote),
     RequestVoteRes(usize, bool),
 }
 
-pub struct RPCConfig {
-    connections: HashMap<usize, mpsc::Sender<RPC>>,
+pub struct RPCConfig<T> {
+    connections: HashMap<usize, mpsc::Sender<RPC<T>>>,
     pub election_timeout: Duration,
 }
 
-impl RPCConfig {
-    pub fn get_connection(&self, id: usize) -> Option<&mpsc::Sender<RPC>> {
+impl<T> RPCConfig<T> {
+    pub fn new(
+        connections: HashMap<usize, mpsc::Sender<RPC<T>>>,
+        election_timeout: Duration,
+    ) -> RPCConfig<T> {
+        Self {
+            connections,
+            election_timeout,
+        }
+    }
+
+    pub fn get_connection(&self, id: usize) -> Option<&mpsc::Sender<RPC<T>>> {
         self.connections.get(&id)
     }
 }
