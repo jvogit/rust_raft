@@ -1,20 +1,23 @@
 use std::{collections::HashMap, sync::mpsc, time::Duration};
 
+#[derive(Debug)]
 pub struct AppendEntries {
-    term: usize,
-    leaderId: usize,
-    prevLogIndex: usize,
-    entries: Vec<usize>,
-    leaderCommit: usize,
+    pub term: usize,
+    pub leader_id: usize,
+    pub prev_log_index: usize,
+    pub entries: Vec<usize>,
+    pub leader_commit: usize,
 }
 
+#[derive(Debug)]
 pub struct RequestVote {
-    term: usize,
-    candidateId: usize,
-    lastLogIndex: usize,
-    lastLogTerm: usize,
+    pub term: usize,
+    pub candidate_id: usize,
+    pub last_log_index: usize,
+    pub last_log_term: usize,
 }
 
+#[derive(Debug)]
 pub enum RPC {
     AppendEntries(AppendEntries),
     AppendEntriesRes(usize, bool),
