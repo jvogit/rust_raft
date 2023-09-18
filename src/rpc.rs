@@ -5,6 +5,7 @@ pub struct AppendEntries<T> {
     pub term: usize,
     pub leader_id: usize,
     pub prev_log_index: usize,
+    pub prev_log_term: usize,
     pub entries: Vec<T>,
     pub leader_commit: usize,
 }

@@ -1,6 +1,7 @@
 use std::{
+    cmp::max,
     sync::mpsc::{self, Receiver},
-    thread::{self, JoinHandle}, cmp::max,
+    thread::{self, JoinHandle},
 };
 
 use crate::rpc::{RPCConfig, RPC};
@@ -100,8 +101,8 @@ where
                     return;
                 }
 
-                let (term, _) = self.log.get(args.prev_log_index).unwrap();
-                if *term != args.term {
+                let (prev_log_term, _) = self.log.get(args.prev_log_index).unwrap();
+                if *prev_log_term != args.prev_log_term {
                     sender
                         .send(RPC::AppendEntriesRes(self.current_term, false))
                         .expect("Sender to not fail!");
@@ -126,8 +127,38 @@ where
                         // apply log[self.last_applied] to state machine
                     }
                 }
+
+                sender
+                    .send(RPC::AppendEntriesRes(self.current_term, true))
+                    .expect("Sender to not fail!");
             }
-            RPC::RequestVote(args) => todo!(),
+            RPC::RequestVote(args) => {
+                let sender = self
+                    .config
+                    .get_connection(args.candidate_id)
+                    .unwrap()
+                    .clone();
+                self.handle_term_conversion_to_follower(args.term);
+
+                if args.term < self.current_term {
+                    sender
+                        .send(RPC::RequestVoteRes(self.current_term, false))
+                        .expect("Sender to not fail!");
+                    return;
+                }
+
+                let vote_granted = self.voted_for.is_none()
+                    || (args.last_log_index >= self.log.len()
+                        || (args.last_log_index == self.log.len() - 1
+                            && args.last_log_term >= self.log.last().unwrap().0));
+                if vote_granted {
+                    self.voted_for = Some(args.candidate_id);
+                }
+
+                sender
+                    .send(RPC::RequestVoteRes(self.current_term, vote_granted))
+                    .expect("Sender to not fail!");
+            }
             RPC::AppendEntriesRes(term, success) => todo!(),
             RPC::RequestVoteRes(term, vote_granted) => todo!(),
         }
