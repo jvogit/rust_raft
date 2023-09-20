@@ -19,11 +19,26 @@ pub struct RequestVote {
 }
 
 #[derive(Debug)]
+pub struct AppendEntriesRes {
+    pub id: usize,
+    pub term: usize,
+    pub success: bool,
+    pub replicated_index: usize,
+}
+
+#[derive(Debug)]
+pub struct RequestVoteRes {
+    pub id: usize,
+    pub term: usize,
+    pub vote_granted: bool,
+}
+
+#[derive(Debug)]
 pub enum RPC<T> {
     AppendEntries(AppendEntries<T>),
-    AppendEntriesRes(usize, bool),
+    AppendEntriesRes(AppendEntriesRes),
     RequestVote(RequestVote),
-    RequestVoteRes(usize, bool),
+    RequestVoteRes(RequestVoteRes),
 }
 
 pub struct RPCConfig<T> {
@@ -44,5 +59,9 @@ impl<T> RPCConfig<T> {
 
     pub fn get_connection(&self, id: usize) -> Option<&mpsc::Sender<RPC<T>>> {
         self.connections.get(&id)
+    }
+
+    pub fn connections_len(&self) -> usize {
+        self.connections.len()
     }
 }

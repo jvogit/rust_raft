@@ -1,11 +1,13 @@
 use std::{
-    cmp::max,
+    cmp::{max, min},
+    collections::{HashMap, HashSet},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
 };
 
-use crate::rpc::{RPCConfig, RPC};
+use crate::rpc::{AppendEntriesRes, RPCConfig, RequestVoteRes, RPC};
 
+#[derive(PartialEq, Eq)]
 enum ServerState {
     Follower,
     Candidate,
@@ -17,6 +19,8 @@ pub struct Server<T> {
     id: usize,
     config: RPCConfig<T>,
     state: ServerState,
+    election_votes: HashSet<usize>,
+    append_entries_count: HashMap<usize, usize>,
     // RAFT variables
     // Stable
     current_term: usize,
@@ -40,16 +44,18 @@ where
     {
         Server {
             id,
-            config,
             state: ServerState::Follower,
+            election_votes: HashSet::new(),
+            append_entries_count: HashMap::new(),
             current_term: 0,
             voted_for: Option::None,
             // dummy vaue at index 0. Real entries begin at index 1
             log: vec![(0, dummy())],
             commit_index: 0,
             last_applied: 0,
-            next_index: vec![],
-            match_index: vec![],
+            next_index: vec![1; config.connections_len()],
+            match_index: vec![0; config.connections_len()],
+            config,
         }
     }
 
@@ -89,14 +95,24 @@ where
 
                 if args.term < self.current_term {
                     sender
-                        .send(RPC::AppendEntriesRes(self.current_term, false))
+                        .send(RPC::AppendEntriesRes(AppendEntriesRes {
+                            id: self.id,
+                            term: self.current_term,
+                            success: false,
+                            replicated_index: self.log.len() - 1,
+                        }))
                         .expect("Sender to not fail!");
                     return;
                 }
 
                 if let None = self.log.get(args.prev_log_index) {
                     sender
-                        .send(RPC::AppendEntriesRes(self.current_term, false))
+                        .send(RPC::AppendEntriesRes(AppendEntriesRes {
+                            id: self.id,
+                            term: self.current_term,
+                            success: false,
+                            replicated_index: self.log.len() - 1,
+                        }))
                         .expect("Sender to not fail!");
                     return;
                 }
@@ -104,7 +120,12 @@ where
                 let (prev_log_term, _) = self.log.get(args.prev_log_index).unwrap();
                 if *prev_log_term != args.prev_log_term {
                     sender
-                        .send(RPC::AppendEntriesRes(self.current_term, false))
+                        .send(RPC::AppendEntriesRes(AppendEntriesRes {
+                            id: self.id,
+                            term: self.current_term,
+                            success: false,
+                            replicated_index: self.log.len() - 1,
+                        }))
                         .expect("Sender to not fail!");
                     return;
                 }
@@ -120,16 +141,17 @@ where
                 }
 
                 if args.leader_commit > self.commit_index {
-                    self.commit_index = max(args.leader_commit, self.log.len() - 1);
-
-                    while self.commit_index > self.last_applied {
-                        self.last_applied += 1;
-                        // apply log[self.last_applied] to state machine
-                    }
+                    self.commit_index = min(args.leader_commit, self.log.len() - 1);
+                    self.apply_log_entries();
                 }
 
                 sender
-                    .send(RPC::AppendEntriesRes(self.current_term, true))
+                    .send(RPC::AppendEntriesRes(AppendEntriesRes {
+                        id: self.id,
+                        term: self.current_term,
+                        success: true,
+                        replicated_index: self.log.len() - 1,
+                    }))
                     .expect("Sender to not fail!");
             }
             RPC::RequestVote(args) => {
@@ -142,7 +164,11 @@ where
 
                 if args.term < self.current_term {
                     sender
-                        .send(RPC::RequestVoteRes(self.current_term, false))
+                        .send(RPC::RequestVoteRes(RequestVoteRes {
+                            id: self.id,
+                            term: self.current_term,
+                            vote_granted: false,
+                        }))
                         .expect("Sender to not fail!");
                     return;
                 }
@@ -156,15 +182,61 @@ where
                 }
 
                 sender
-                    .send(RPC::RequestVoteRes(self.current_term, vote_granted))
+                    .send(RPC::RequestVoteRes(RequestVoteRes {
+                        id: self.id,
+                        term: self.current_term,
+                        vote_granted,
+                    }))
                     .expect("Sender to not fail!");
             }
-            RPC::AppendEntriesRes(term, success) => todo!(),
-            RPC::RequestVoteRes(term, vote_granted) => todo!(),
+            RPC::AppendEntriesRes(res) => {
+                if self.state != ServerState::Leader
+                    || self.handle_term_conversion_to_follower(res.term)
+                {
+                    return;
+                }
+
+                if !res.success {
+                    // TODO: decrement next index and try again
+                    self.next_index[res.id] -= 1;
+                    todo!();
+                }
+
+                self.next_index[res.id] = max(self.next_index[res.id], res.replicated_index + 1);
+                self.match_index[res.id] = max(self.match_index[res.id], res.replicated_index);
+
+                // Check if exists N > commitIndex where majority of matchIndex[i] >= N for all servers i and log[N].term == currentTerm -> set commitIndex to N
+                let num_of_replicated = self
+                    .match_index
+                    .iter()
+                    .filter(|&&i| i >= res.replicated_index)
+                    .count();
+                let num_needed = self.config.connections_len() / 2 + 1;
+
+                if num_of_replicated >= num_needed {
+                    self.commit_index = max(self.commit_index, res.replicated_index);
+                    self.apply_log_entries();
+                }
+            }
+            RPC::RequestVoteRes(res) => {
+                if self.state != ServerState::Candidate
+                    || self.handle_term_conversion_to_follower(res.term)
+                    || !res.vote_granted
+                {
+                    return;
+                }
+
+                self.election_votes.insert(res.id);
+
+                // TODO: Check if elected as leader then promote
+                todo!()
+            }
         }
     }
 
-    fn handle_timeout(&self) {}
+    fn handle_timeout(&self) {
+        todo!()
+    }
 
     fn handle_term_conversion_to_follower(&mut self, term: usize) -> bool {
         if term > self.current_term {
@@ -175,5 +247,13 @@ where
         }
 
         false
+    }
+
+    fn apply_log_entries(&mut self) {
+        while self.commit_index > self.last_applied {
+            self.last_applied += 1;
+            // TODO: apply log[self.last_applied] to state machine
+            todo!()
+        }
     }
 }
