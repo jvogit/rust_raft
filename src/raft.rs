@@ -5,7 +5,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::rpc::{AppendEntriesRes, RPCConfig, RequestVoteRes, RPC};
+use crate::rpc::{AppendEntries, AppendEntriesRes, RPCConfig, RequestVote, RequestVoteRes, RPC};
 
 #[derive(PartialEq, Eq)]
 enum ServerState {
@@ -14,7 +14,10 @@ enum ServerState {
     Leader,
 }
 
-pub struct Server<T> {
+pub struct Server<T>
+where
+    T: Clone,
+{
     // Server metadata
     id: usize,
     config: RPCConfig<T>,
@@ -36,7 +39,7 @@ pub struct Server<T> {
 
 impl<T> Server<T>
 where
-    T: Send + 'static,
+    T: Clone + Send + 'static,
 {
     pub fn new<F>(id: usize, config: RPCConfig<T>, dummy: F) -> Server<T>
     where
@@ -134,9 +137,9 @@ where
                 for (i, entry) in args.entries.into_iter().enumerate() {
                     let index = i + args.prev_log_index + 1;
                     if index < self.log.len() {
-                        self.log[index] = (args.term, entry);
+                        self.log[index] = entry;
                     } else {
-                        self.log.push((args.term, entry));
+                        self.log.push(entry);
                     }
                 }
 
@@ -228,14 +231,41 @@ where
 
                 self.election_votes.insert(res.id);
 
-                // TODO: Check if elected as leader then promote
-                todo!()
+                let num_of_votes = self.election_votes.len();
+                let num_needed = self.config.connections_len() / 2 + 1;
+
+                if num_of_votes >= num_needed {
+                    self.state = ServerState::Leader;
+                    self.append_entries_count.clear();
+                    self.append_entries(true);
+                }
             }
         }
     }
 
-    fn handle_timeout(&self) {
-        todo!()
+    fn handle_timeout(&mut self) {
+        match self.state {
+            ServerState::Follower => {
+                self.state = ServerState::Candidate;
+                self.handle_timeout();
+            }
+            ServerState::Candidate => {
+                // Start new election
+                self.current_term += 1;
+                self.election_votes.clear();
+                self.election_votes.insert(self.id);
+                self.voted_for = Some(self.id);
+                self.config.broadcast_rpc(RPC::RequestVote(RequestVote {
+                    term: self.current_term,
+                    candidate_id: self.id,
+                    last_log_index: self.log.len() - 1,
+                    last_log_term: self.log.last().unwrap().0,
+                }));
+            }
+            ServerState::Leader => {
+                self.append_entries(true);
+            }
+        }
     }
 
     fn handle_term_conversion_to_follower(&mut self, term: usize) -> bool {
@@ -253,7 +283,37 @@ where
         while self.commit_index > self.last_applied {
             self.last_applied += 1;
             // TODO: apply log[self.last_applied] to state machine
+            // TODO: if leader then respond back to client
             todo!()
+        }
+    }
+
+    fn append_entries(&mut self, heartbeat: bool) {
+        self.next_index.iter().enumerate().for_each(|(id, at)| {
+            if id == self.id {
+                return;
+            }
+
+            let conn = self.config.get_connection(id).unwrap();
+            let rpc = RPC::AppendEntries(AppendEntries {
+                term: self.current_term,
+                leader_id: self.id,
+                prev_log_index: self.log.len() - 1,
+                prev_log_term: self.log.last().unwrap().0,
+                entries: if heartbeat {
+                    vec![]
+                } else {
+                    Vec::from(&self.log[*at..])
+                },
+                leader_commit: self.commit_index,
+            });
+
+            conn.send(rpc).unwrap();
+        });
+
+        // if not heartbeat, then latest log entry is waiting to be committed to respond back to client
+        if !heartbeat {
+            self.append_entries_count.insert(self.log.len() - 1, 1);
         }
     }
 }
