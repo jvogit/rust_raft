@@ -200,9 +200,22 @@ where
                 }
 
                 if !res.success {
-                    // TODO: decrement next index and try again
                     self.next_index[res.id] -= 1;
-                    todo!();
+
+                    let at = self.next_index[res.id];
+                    let conn = self.config.get_connection(res.id).unwrap();
+                    let rpc = RPC::AppendEntries(AppendEntries {
+                        term: self.current_term,
+                        leader_id: self.id,
+                        prev_log_index: at - 1,
+                        prev_log_term: self.log[at - 1].0,
+                        entries: Vec::from(&self.log[at..]),
+                        leader_commit: self.commit_index,
+                    });
+        
+                    conn.send(rpc).unwrap();
+
+                    return;
                 }
 
                 self.next_index[res.id] = max(self.next_index[res.id], res.replicated_index + 1);
@@ -298,8 +311,8 @@ where
             let rpc = RPC::AppendEntries(AppendEntries {
                 term: self.current_term,
                 leader_id: self.id,
-                prev_log_index: self.log.len() - 1,
-                prev_log_term: self.log.last().unwrap().0,
+                prev_log_index: at - 1,
+                prev_log_term: self.log[at - 1].0,
                 entries: if heartbeat {
                     vec![]
                 } else {
