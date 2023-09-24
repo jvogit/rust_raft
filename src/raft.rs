@@ -247,7 +247,7 @@ where
 
                 if num_of_votes >= num_needed {
                     self.state = ServerState::Leader;
-                    self.append_entries(true);
+                    self.append_entries();
                 }
             }
         }
@@ -273,7 +273,8 @@ where
                 }));
             }
             ServerState::Leader => {
-                self.append_entries(true);
+                // heartbeat or idempotent retry
+                self.append_entries();
             }
         }
     }
@@ -298,7 +299,7 @@ where
         }
     }
 
-    fn append_entries(&mut self, heartbeat: bool) {
+    fn append_entries(&mut self) {
         self.next_index.iter().enumerate().for_each(|(id, at)| {
             if id == self.id {
                 return;
@@ -310,11 +311,7 @@ where
                 leader_id: self.id,
                 prev_log_index: at - 1,
                 prev_log_term: self.log[at - 1].0,
-                entries: if heartbeat {
-                    vec![]
-                } else {
-                    Vec::from(&self.log[*at..])
-                },
+                entries: Vec::from(&self.log[*at..]),
                 leader_commit: self.commit_index,
             });
 
