@@ -23,7 +23,6 @@ where
     config: RPCConfig<T>,
     state: ServerState,
     election_votes: HashSet<usize>,
-    append_entries_count: HashMap<usize, usize>,
     // RAFT variables
     // Stable
     current_term: usize,
@@ -49,7 +48,6 @@ where
             id,
             state: ServerState::Follower,
             election_votes: HashSet::new(),
-            append_entries_count: HashMap::new(),
             current_term: 0,
             voted_for: Option::None,
             // dummy vaue at index 0. Real entries begin at index 1
@@ -249,7 +247,6 @@ where
 
                 if num_of_votes >= num_needed {
                     self.state = ServerState::Leader;
-                    self.append_entries_count.clear();
                     self.append_entries(true);
                 }
             }
@@ -323,10 +320,5 @@ where
 
             conn.send(rpc).unwrap();
         });
-
-        // if not heartbeat, then latest log entry is waiting to be committed to respond back to client
-        if !heartbeat {
-            self.append_entries_count.insert(self.log.len() - 1, 1);
-        }
     }
 }
