@@ -2,7 +2,7 @@ use std::{
     cmp::{max, min},
     collections::HashSet,
     sync::mpsc::{self, Receiver},
-    thread::{self, JoinHandle},
+    thread::{self, JoinHandle}, time::Duration,
 };
 
 use crate::rpc::{AppendEntries, AppendEntriesRes, RPCConfig, RequestVote, RequestVoteRes, RPC};
@@ -86,7 +86,13 @@ where
         }
     }
 
-    fn handle_leader(&mut self, recv: &Receiver<RPC<T>>) {}
+    fn handle_leader(&mut self, recv: &Receiver<RPC<T>>) {
+        match recv.recv_timeout(self.config.election_timeout - Duration::from_millis(1000)) {
+            Ok(rpc) => self.handle_rpc(rpc),
+            Err(mpsc::RecvTimeoutError::Timeout) => self.handle_timeout(),
+            Err(_) => return,
+        }
+    }
 
     fn handle_rpc(&mut self, rpc: RPC<T>) {
         match rpc {
