@@ -1,6 +1,6 @@
 use std::{
     cmp::{max, min},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
 };
@@ -54,8 +54,8 @@ where
             log: vec![(0, dummy())],
             commit_index: 0,
             last_applied: 0,
-            next_index: vec![1; config.connections_len()],
-            match_index: vec![0; config.connections_len()],
+            next_index: vec![1; config.connections.len()],
+            match_index: vec![0; config.connections.len()],
             config,
         }
     }
@@ -91,7 +91,7 @@ where
     fn handle_rpc(&mut self, rpc: RPC<T>) {
         match rpc {
             RPC::AppendEntries(args) => {
-                let sender = self.config.get_connection(args.leader_id).unwrap().clone();
+                let sender = &self.config.connections[&args.leader_id].clone();
                 self.handle_term_conversion_to_follower(args.term);
 
                 if args.term < self.current_term {
@@ -156,11 +156,7 @@ where
                     .expect("Sender to not fail!");
             }
             RPC::RequestVote(args) => {
-                let sender = self
-                    .config
-                    .get_connection(args.candidate_id)
-                    .unwrap()
-                    .clone();
+                let sender = &self.config.connections[&args.candidate_id].clone();
                 self.handle_term_conversion_to_follower(args.term);
 
                 if args.term < self.current_term {
@@ -201,7 +197,7 @@ where
                     self.next_index[res.id] -= 1;
 
                     let at = self.next_index[res.id];
-                    let conn = self.config.get_connection(res.id).unwrap();
+                    let conn = &self.config.connections[&res.id];
                     let rpc = RPC::AppendEntries(AppendEntries {
                         term: self.current_term,
                         leader_id: self.id,
@@ -210,7 +206,7 @@ where
                         entries: Vec::from(&self.log[at..]),
                         leader_commit: self.commit_index,
                     });
-        
+
                     conn.send(rpc).unwrap();
 
                     return;
@@ -225,7 +221,7 @@ where
                     .iter()
                     .filter(|&&i| i >= res.replicated_index)
                     .count();
-                let num_needed = self.config.connections_len() / 2 + 1;
+                let num_needed = self.config.connections.len() / 2 + 1;
 
                 if num_of_replicated >= num_needed {
                     self.commit_index = max(self.commit_index, res.replicated_index);
@@ -243,13 +239,14 @@ where
                 self.election_votes.insert(res.id);
 
                 let num_of_votes = self.election_votes.len();
-                let num_needed = self.config.connections_len() / 2 + 1;
+                let num_needed = self.config.connections.len() / 2 + 1;
 
                 if num_of_votes >= num_needed {
                     self.state = ServerState::Leader;
                     self.append_entries();
                 }
             }
+            RPC::ClientRequest(client_sender, client_req) => {}
         }
     }
 
@@ -265,7 +262,7 @@ where
                 self.election_votes.clear();
                 self.election_votes.insert(self.id);
                 self.voted_for = Some(self.id);
-                self.config.broadcast_rpc(RPC::RequestVote(RequestVote {
+                self.broadcast_rpc(RPC::RequestVote(RequestVote {
                     term: self.current_term,
                     candidate_id: self.id,
                     last_log_index: self.log.len() - 1,
@@ -295,7 +292,14 @@ where
             self.last_applied += 1;
             // TODO: apply log[self.last_applied] to state machine
             // TODO: if leader then respond back to client
-            todo!()
+            if self.state == ServerState::Leader {
+                println!(
+                    "[{}] Applying and responding to client {}",
+                    self.id, self.last_applied
+                )
+            } else {
+                println!("[{}] Applying {}", self.id, self.last_applied)
+            }
         }
     }
 
@@ -305,7 +309,7 @@ where
                 return;
             }
 
-            let conn = self.config.get_connection(id).unwrap();
+            let conn = &self.config.connections[&id];
             let rpc = RPC::AppendEntries(AppendEntries {
                 term: self.current_term,
                 leader_id: self.id,
@@ -317,5 +321,15 @@ where
 
             conn.send(rpc).unwrap();
         });
+    }
+
+    fn broadcast_rpc(&self, rpc: RPC<T>) {
+        self.config
+            .connections
+            .iter()
+            .filter(|(&id, _)| id != self.id)
+            .for_each(|(id, conn)| {
+                conn.send(rpc.clone()).expect(&format!("{} sender to not fail!", id))
+            })
     }
 }

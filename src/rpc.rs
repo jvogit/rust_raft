@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::mpsc, time::Duration};
+use std::{collections::HashMap, sync::mpsc::{self, Sender}, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct AppendEntries<T> {
@@ -39,41 +39,24 @@ pub enum RPC<T> {
     AppendEntriesRes(AppendEntriesRes),
     RequestVote(RequestVote),
     RequestVoteRes(RequestVoteRes),
+    ClientRequest(Sender<ClientResponse>, ClientRequest<T>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientRequest<T> {
+    pub value: T,
+    pub xid: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientResponse {
+    pub success: bool,
 }
 
 pub struct RPCConfig<T>
 where
     T: Clone,
 {
-    connections: HashMap<usize, mpsc::Sender<RPC<T>>>,
+    pub connections: HashMap<usize, mpsc::Sender<RPC<T>>>,
     pub election_timeout: Duration,
-}
-
-impl<T> RPCConfig<T>
-where
-    T: Clone,
-{
-    pub fn new(
-        connections: HashMap<usize, mpsc::Sender<RPC<T>>>,
-        election_timeout: Duration,
-    ) -> RPCConfig<T> {
-        Self {
-            connections,
-            election_timeout,
-        }
-    }
-
-    pub fn get_connection(&self, id: usize) -> Option<&mpsc::Sender<RPC<T>>> {
-        self.connections.get(&id)
-    }
-
-    pub fn connections_len(&self) -> usize {
-        self.connections.len()
-    }
-
-    pub fn broadcast_rpc(&self, rpc: RPC<T>) {
-        self.connections.values().for_each(|c| {
-            c.send(rpc.clone()).unwrap();
-        });
-    }
 }
