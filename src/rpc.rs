@@ -49,10 +49,13 @@ pub struct ClientRequest<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClientResponse {
-    pub success: bool,
+pub enum ClientResponse {
+    Success,
+    LeaderRedirect(usize),
+    Fail,
 }
 
+#[derive(Debug, Clone)]
 pub struct RPCConfig<T>
 where
     T: Clone,

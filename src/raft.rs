@@ -2,10 +2,13 @@ use std::{
     cmp::{max, min},
     collections::HashSet,
     sync::mpsc::{self, Receiver},
-    thread::{self, JoinHandle}, time::Duration,
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
-use crate::rpc::{AppendEntries, AppendEntriesRes, RPCConfig, RequestVote, RequestVoteRes, RPC};
+use crate::rpc::{
+    AppendEntries, AppendEntriesRes, ClientResponse, RPCConfig, RequestVote, RequestVoteRes, RPC,
+};
 
 #[derive(PartialEq, Eq)]
 enum ServerState {
@@ -23,6 +26,7 @@ where
     config: RPCConfig<T>,
     state: ServerState,
     election_votes: HashSet<usize>,
+    leader_id: Option<usize>,
     // RAFT variables
     // Stable
     current_term: usize,
@@ -48,6 +52,7 @@ where
             id,
             state: ServerState::Follower,
             election_votes: HashSet::new(),
+            leader_id: None,
             current_term: 0,
             voted_for: Option::None,
             // dummy vaue at index 0. Real entries begin at index 1
@@ -61,6 +66,10 @@ where
     }
 
     pub fn start_thread(mut self, recv: Receiver<RPC<T>>) -> JoinHandle<()> {
+        // If id is 0 handle timeout immediately to elect itself leader first!
+        if self.id == 0 {
+            self.handle_timeout();
+        }
         thread::spawn(move || loop {
             match self.state {
                 ServerState::Follower => self.handle_follower(&recv),
@@ -87,7 +96,7 @@ where
     }
 
     fn handle_leader(&mut self, recv: &Receiver<RPC<T>>) {
-        match recv.recv_timeout(self.config.election_timeout - Duration::from_millis(1000)) {
+        match recv.recv_timeout(self.config.election_timeout - Duration::from_millis(500)) {
             Ok(rpc) => self.handle_rpc(rpc),
             Err(mpsc::RecvTimeoutError::Timeout) => self.handle_timeout(),
             Err(_) => return,
@@ -152,6 +161,8 @@ where
                     self.apply_log_entries();
                 }
 
+                self.leader_id = Some(args.leader_id);
+
                 sender
                     .send(RPC::AppendEntriesRes(AppendEntriesRes {
                         id: self.id,
@@ -176,8 +187,9 @@ where
                     return;
                 }
 
-                let vote_granted = self.voted_for.is_none()
-                    || (args.last_log_index >= self.log.len()
+                let vote_granted = (self.voted_for.is_none()
+                    || self.voted_for.unwrap() == args.candidate_id)
+                    && (args.last_log_index >= self.log.len()
                         || (args.last_log_index == self.log.len() - 1
                             && args.last_log_term >= self.log.last().unwrap().0));
                 if vote_granted {
@@ -249,14 +261,41 @@ where
 
                 if num_of_votes >= num_needed {
                     self.state = ServerState::Leader;
+                    println!("[{}] Elected leader", self.id);
                     self.append_entries();
                 }
             }
-            RPC::ClientRequest(client_sender, client_req) => {}
+            RPC::ClientRequest(client_sender, client_req) => match self.state {
+                ServerState::Follower => {
+                    // TOOD: Send redirect response to the leader, for now send a Fail
+                    match self.leader_id {
+                        Some(leader_id) => {
+                            client_sender
+                                .send(ClientResponse::LeaderRedirect(leader_id))
+                                .expect("Client Sender to not fail!");
+                        }
+                        None => {
+                            client_sender
+                                .send(ClientResponse::Fail)
+                                .expect("Client Sender to not fail!");
+                        }
+                    }
+                }
+                ServerState::Candidate => {
+                    client_sender
+                        .send(ClientResponse::Fail)
+                        .expect("Client Sender to not fail!");
+                }
+                ServerState::Leader => {
+                    self.log.push((self.current_term, client_req.value));
+                    self.append_entries();
+                }
+            },
         }
     }
 
     fn handle_timeout(&mut self) {
+        println!("[{}] Timed out!", self.id);
         match self.state {
             ServerState::Follower => {
                 self.state = ServerState::Candidate;
@@ -285,6 +324,8 @@ where
     fn handle_term_conversion_to_follower(&mut self, term: usize) -> bool {
         if term > self.current_term {
             self.current_term = term;
+            self.voted_for = None;
+            self.leader_id = None;
             self.state = ServerState::Follower;
 
             return true;
@@ -335,7 +376,8 @@ where
             .iter()
             .filter(|(&id, _)| id != self.id)
             .for_each(|(id, conn)| {
-                conn.send(rpc.clone()).expect(&format!("{} sender to not fail!", id))
+                conn.send(rpc.clone())
+                    .expect(&format!("{} sender to not fail!", id))
             })
     }
 }
