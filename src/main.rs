@@ -57,7 +57,9 @@ fn main() {
         .map(|(id, (_, recv))| Server::new(id, config.clone(), dummy).start_thread(recv))
         .collect();
     let (client_sender, client_receiver) = mpsc::channel::<ClientResponse>();
+
     send_client_request(&senders, &client_sender, &client_receiver, (1, 1));
+    
     handles.into_iter().for_each(|handle| {
         handle.join();
     });

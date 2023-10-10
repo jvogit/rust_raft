@@ -267,7 +267,6 @@ where
             }
             RPC::ClientRequest(client_sender, client_req) => match self.state {
                 ServerState::Follower => {
-                    // TOOD: Send redirect response to the leader, for now send a Fail
                     match self.leader_id {
                         Some(leader_id) => {
                             client_sender
