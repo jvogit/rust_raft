@@ -10,6 +10,7 @@ use crate::rpc::{
     AppendEntries, AppendEntriesRes, ClientResponse, RPCConfig, RequestVote, RequestVoteRes, RPC,
 };
 
+/// Represents the possible state for a server
 #[derive(PartialEq, Eq)]
 enum ServerState {
     Follower,
@@ -17,6 +18,7 @@ enum ServerState {
     Leader,
 }
 
+/// A server represents a node in a distributed cluster
 pub struct Server<T>
 where
     T: Clone,
@@ -44,6 +46,8 @@ impl<T> Server<T>
 where
     T: Clone + Send + 'static,
 {
+    /// Returns a new Server with id and configuration
+    /// 
     pub fn new<F>(id: usize, config: RPCConfig<T>, dummy: F) -> Server<T>
     where
         F: FnOnce() -> T,
@@ -65,6 +69,12 @@ where
         }
     }
 
+    /// Starts the server as a rust thread
+    /// 
+    /// # Arguments
+    /// 
+    /// * `recv` - The receiver channel for this Server
+    /// 
     pub fn start_thread(mut self, recv: Receiver<RPC<T>>) -> JoinHandle<()> {
         // If id is 0 handle timeout immediately to elect itself leader first!
         if self.id == 0 {
@@ -102,7 +112,9 @@ where
             Err(_) => return,
         }
     }
-
+    
+    /// Handles incoming RPC AppendEntries, RequestVote, ClientRequests, and corresponding Responses if applicable
+    /// 
     fn handle_rpc(&mut self, rpc: RPC<T>) {
         match rpc {
             RPC::AppendEntries(args) => {
@@ -293,6 +305,9 @@ where
         }
     }
 
+    /// Handles timeout for the server such as election timeouts or for sending heartbeat requests for
+    /// rust thread implementation.
+    /// 
     fn handle_timeout(&mut self) {
         println!("[{}] Timed out!", self.id);
         match self.state {
@@ -320,6 +335,10 @@ where
         }
     }
 
+    /// Handles conversion to follower state for a server
+    /// 
+    /// This keeps the property that for all servers, if a RPC with a term greater than the server's then
+    /// revert to Follower state and reset metadata voted_for and leader_id.
     fn handle_term_conversion_to_follower(&mut self, term: usize) -> bool {
         if term > self.current_term {
             self.current_term = term;
@@ -333,6 +352,8 @@ where
         false
     }
 
+    /// Apply the log entries to the server's state machine.
+    /// 
     fn apply_log_entries(&mut self) {
         while self.commit_index > self.last_applied {
             self.last_applied += 1;
@@ -349,6 +370,9 @@ where
         }
     }
 
+    /// Send AppendEntries RPC to the rest of the cluster. The server must be a leader to send
+    /// AppendEntries successfully.
+    /// 
     fn append_entries(&mut self) {
         self.next_index.iter().enumerate().for_each(|(id, at)| {
             if id == self.id {
